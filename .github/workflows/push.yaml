@@ -1,14 +1,21 @@
 name: Push
 run-name: ${{ github.ref_name }} push run 🚀
 on:
-  # Pushes to main only check formatting; builds run only for release tags, pull requests and manual dispatch cover the rest.
+  # Pushes to main only check formatting (docs-only pushes skip it); release tags build and publish.
+  # Pull requests and manual dispatch cover the rest.
   push:
     branches:
       - main
     tags:
       - '*'
+    paths-ignore:
+      - '**.md'
 permissions:
   contents: read
+concurrency:
+  # A newer push to main supersedes the running check; a release tag always runs to the end.
+  group: '${{ github.workflow }} @ ${{ github.ref }}'
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 jobs:
   check-format:
     name: Check Formatting 🔍
@@ -58,7 +65,7 @@ jobs:
           esac
 
       - name: Download Build Artifacts 📥
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: fromJSON(steps.check.outputs.validTag)
         id: download
 
@@ -105,7 +112,7 @@ jobs:
       - name: Create Release 🛫
         if: fromJSON(steps.check.outputs.validTag)
         id: create_release
-        uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           prerelease: ${{ fromJSON(steps.check.outputs.prerelease) }}
