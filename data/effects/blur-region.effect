@@ -1,0 +1,122 @@
+// Shaders for the Blur Region source (src/blur-region.c).
+//   Copy  - one halving step; drawn at half size, each pixel averages a 2x2 block.
+//   Blur  - 25-tap separable Gaussian along texel_step.
+//   Final - draws the region: maps each region pixel to the target, optionally pixelates, tints and masks.
+//   Solid - fills the region with a color.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float2 texel_step;
+
+uniform float2 local_size; // region size in its own pixels
+uniform float4 map_x;      // target.x = dot(float3(x, y, 1), map_x.xyz), in target pixels
+uniform float4 map_y;
+uniform float2 tex_size;   // target size in pixels
+uniform float mosaic;      // block size in target pixels, 0 = off
+uniform float4 tint;       // rgb = color, a = amount
+uniform float radius;      // corner radius in region pixels
+uniform float feather;     // edge fade width in region pixels
+uniform float opacity;
+
+sampler_state linearClamp {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float4 PSCopy(VertData v_in) : TARGET
+{
+	return image.Sample(linearClamp, v_in.uv);
+}
+
+float4 PSBlur(VertData v_in) : TARGET
+{
+	float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+	float wsum = 0.0;
+	for (float i = -12.0; i <= 12.0; i += 1.0) {
+		float x = i / 6.0;
+		float w = exp(-0.5 * x * x);
+		sum += image.Sample(linearClamp, v_in.uv + texel_step * i) * w;
+		wsum += w;
+	}
+	return sum / wsum;
+}
+
+// 1 inside the rounded rectangle, fading to 0 over `feather` pixels at its edge.
+float region_mask(float2 lp)
+{
+	float2 half_size = local_size * 0.5;
+	float r = min(radius, min(half_size.x, half_size.y));
+	float2 q = abs(lp - half_size) - (half_size - float2(r, r));
+	float dist = length(max(q, float2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+	return saturate(-dist / max(feather, 1.0));
+}
+
+float4 PSFinal(VertData v_in) : TARGET
+{
+	float2 lp = v_in.uv * local_size;
+	float3 lp3 = float3(lp, 1.0);
+	float2 tp = float2(dot(lp3, map_x.xyz), dot(lp3, map_y.xyz));
+	if (mosaic > 0.0)
+		tp = (floor(tp / mosaic) + 0.5) * mosaic;
+
+	float4 c = image.Sample(linearClamp, tp / tex_size);
+	c.rgb = lerp(c.rgb, tint.rgb, tint.a);
+	return float4(c.rgb, c.a * region_mask(lp) * opacity);
+}
+
+float4 PSSolid(VertData v_in) : TARGET
+{
+	float2 lp = v_in.uv * local_size;
+	return float4(tint.rgb, region_mask(lp) * opacity);
+}
+
+technique Copy
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSCopy(v_in);
+	}
+}
+
+technique Blur
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSBlur(v_in);
+	}
+}
+
+technique Final
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSFinal(v_in);
+	}
+}
+
+technique Solid
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSSolid(v_in);
+	}
+}

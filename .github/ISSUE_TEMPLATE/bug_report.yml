@@ -1,0 +1,40 @@
+name: 问题反馈
+description: 区域不显示、位置不对、画面异常或 OBS 崩溃
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 你做了什么，期望看到什么，实际看到了什么。区域显示不对时请附场景截图，并说明区域和游戏采集在来源列表里的位置。
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: obs-version
+    attributes:
+      label: OBS 版本
+      placeholder: 31.1.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: log
+    attributes:
+      label: OBS 日志链接
+      description: 「帮助 → 日志文件 → 上传当前日志文件」得到的链接

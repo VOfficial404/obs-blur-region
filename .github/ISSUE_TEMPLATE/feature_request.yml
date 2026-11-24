@@ -1,0 +1,15 @@
+name: 功能建议
+description: 希望插件支持的新功能
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 现在哪里不方便？想遮挡的是什么游戏、什么内容？
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 希望怎么做
