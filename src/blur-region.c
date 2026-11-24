@@ -32,6 +32,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/dstr.h>
 #include <util/threading.h>
 
+#include <float.h>
+#include <math.h>
 #include <stdint.h>
 
 #define T(text) obs_module_text(text)
@@ -58,7 +60,7 @@ struct blur_region {
 	gs_eparam_t *p_local_size;
 	gs_eparam_t *p_map_x;
 	gs_eparam_t *p_map_y;
-	gs_eparam_t *p_tex_size;
+	gs_eparam_t *p_tex_rect;
 	gs_eparam_t *p_mosaic;
 	gs_eparam_t *p_tint;
 	gs_eparam_t *p_radius;
@@ -88,7 +90,14 @@ struct blur_region {
 	/* Graphics thread only (video_tick and video_render). */
 	float refresh_t;
 	obs_weak_source_t *container; /* scene or group holding both items */
-	struct dstr located_target;
+	int64_t self_id;              /* scene item ids inside container; 0 when not located */
+	int64_t target_id;
+};
+
+/* Part of the target a frame needs, in target pixels. */
+struct pixel_rect {
+	int x, y;
+	uint32_t cx, cy;
 };
 
 struct source_list {
@@ -144,26 +153,96 @@ static bool usable_target(obs_source_t *src, const char *self_name)
 	       !name_equals(obs_source_get_id(src), SOURCE_ID) && !contains_region(src, self_name);
 }
 
-/* items run bottom to top, as obs_scene_enum_items returns them. */
-static const char *pick_target(const struct item_list *list, size_t self_idx, const char *self_name,
-			       const char *target_name)
+static bool is_capture(obs_source_t *src)
+{
+	static const char *const ids[] = {
+		"game_capture",
+		"window_capture",
+		"monitor_capture",
+		"display_capture",
+		"screen_capture",
+		"xcomposite_input",
+		"xshm_input",
+		"pipewire-desktop-capture-source",
+		"pipewire-window-capture-source",
+		"pipewire-screen-capture-source",
+	};
+	const char *id = obs_source_get_unversioned_id(src);
+	for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+		if (name_equals(id, ids[i]))
+			return true;
+	}
+	return false;
+}
+
+static void get_placement(obs_sceneitem_t *item, struct region_placement *p)
+{
+	struct matrix4 m;
+	struct obs_sceneitem_crop crop;
+	obs_sceneitem_get_draw_transform(item, &m);
+	obs_sceneitem_get_crop(item, &crop);
+
+	p->a = m.x.x;
+	p->b = m.x.y;
+	p->c = m.y.x;
+	p->d = m.y.y;
+	p->tx = m.t.x;
+	p->ty = m.t.y;
+	p->crop_x = (float)crop.left;
+	p->crop_y = (float)crop.top;
+}
+
+/* Whether the item shows its own pixels under the middle of the region. */
+static bool covers_region(const struct blur_region *br, obs_sceneitem_t *self_item, obs_sceneitem_t *item)
+{
+	struct region_placement self_place, place;
+	float mx[3], my[3];
+	get_placement(self_item, &self_place);
+	get_placement(item, &place);
+	if (!region_map_compute(&self_place, &place, mx, my))
+		return false;
+
+	const float lx = (float)br->width * 0.5f, ly = (float)br->height * 0.5f;
+	const float x = mx[0] * lx + mx[1] * ly + mx[2];
+	const float y = my[0] * lx + my[1] * ly + my[2];
+
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	struct obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	return x >= (float)crop.left && y >= (float)crop.top &&
+	       x < (float)obs_source_get_width(src) - (float)crop.right &&
+	       y < (float)obs_source_get_height(src) - (float)crop.bottom;
+}
+
+/* items run bottom to top, as obs_scene_enum_items returns them. Returns the index of the item to
+ * blur, or SIZE_MAX. */
+static size_t pick_target(const struct blur_region *br, const struct item_list *list, size_t self_idx,
+			  const char *self_name, const char *target_name)
 {
 	if (*target_name) {
 		for (size_t i = 0; i < list->items.num; i++) {
 			obs_source_t *src = obs_sceneitem_get_source(list->items.array[i]);
 			if (name_equals(obs_source_get_name(src), target_name))
-				return usable_target(src, self_name) ? target_name : NULL;
+				return usable_target(src, self_name) ? i : SIZE_MAX;
 		}
-		return NULL;
+		return SIZE_MAX;
 	}
 
-	for (size_t i = self_idx; i-- > 0;) {
-		obs_sceneitem_t *item = list->items.array[i];
-		obs_source_t *src = obs_sceneitem_get_source(item);
-		if (obs_sceneitem_visible(item) && usable_target(src, self_name))
-			return obs_source_get_name(src);
+	/* Automatic: the nearest visible game, window or display capture under the middle of the
+	 * region, else the nearest visible source there. A transparent overlay between the region
+	 * and the game is passed over; picking it would leave the game under it uncovered. */
+	obs_sceneitem_t *self_item = list->items.array[self_idx];
+	for (int pass = 0; pass < 2; pass++) {
+		for (size_t i = self_idx; i-- > 0;) {
+			obs_sceneitem_t *item = list->items.array[i];
+			obs_source_t *src = obs_sceneitem_get_source(item);
+			if (!obs_sceneitem_visible(item) || (pass == 0 && !is_capture(src)))
+				continue;
+			if (covers_region(br, self_item, item) && usable_target(src, self_name))
+				return i;
+		}
 	}
-	return NULL;
+	return SIZE_MAX;
 }
 
 static bool search_scene(struct blur_region *br, obs_scene_t *scene, const char *self_name, const char *target_name)
@@ -181,10 +260,11 @@ static bool search_scene(struct blur_region *br, obs_scene_t *scene, const char 
 
 	bool found = false;
 	if (self_idx != SIZE_MAX) {
-		const char *target = pick_target(&list, self_idx, self_name, target_name);
-		if (target) {
+		const size_t target_idx = pick_target(br, &list, self_idx, self_name, target_name);
+		if (target_idx != SIZE_MAX) {
 			br->container = obs_source_get_weak_source(obs_scene_get_source(scene));
-			dstr_copy(&br->located_target, target);
+			br->self_id = obs_sceneitem_get_id(list.items.array[self_idx]);
+			br->target_id = obs_sceneitem_get_id(list.items.array[target_idx]);
 			found = true;
 		}
 	} else {
@@ -203,7 +283,8 @@ static void clear_location(struct blur_region *br)
 {
 	obs_weak_source_release(br->container);
 	br->container = NULL;
-	dstr_free(&br->located_target);
+	br->self_id = 0;
+	br->target_id = 0;
 }
 
 /* Prefer the scene on air, then the one in the preview, then any: a region pasted as a reference
@@ -250,23 +331,6 @@ static void locate(struct blur_region *br)
 
 /* ---- Rendering ------------------------------------------------------------------------------ */
 
-static void get_placement(obs_sceneitem_t *item, struct region_placement *p)
-{
-	struct matrix4 m;
-	struct obs_sceneitem_crop crop;
-	obs_sceneitem_get_draw_transform(item, &m);
-	obs_sceneitem_get_crop(item, &crop);
-
-	p->a = m.x.x;
-	p->b = m.x.y;
-	p->c = m.y.x;
-	p->d = m.y.y;
-	p->tx = m.t.x;
-	p->ty = m.t.y;
-	p->crop_x = (float)crop.left;
-	p->crop_y = (float)crop.top;
-}
-
 static bool begin_pass(gs_texrender_t *tr, uint32_t cx, uint32_t cy)
 {
 	gs_texrender_reset(tr);
@@ -276,7 +340,6 @@ static bool begin_pass(gs_texrender_t *tr, uint32_t cx, uint32_t cy)
 	struct vec4 clear;
 	vec4_zero(&clear);
 	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
 	return true;
 }
 
@@ -285,6 +348,7 @@ static gs_texture_t *effect_pass(struct blur_region *br, gs_texrender_t *tr, con
 {
 	if (!begin_pass(tr, cx, cy))
 		return NULL;
+	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
 
 	struct vec2 step;
 	vec2_set(&step, step_x, step_y);
@@ -297,12 +361,60 @@ static gs_texture_t *effect_pass(struct blur_region *br, gs_texrender_t *tr, con
 	return gs_texrender_get_texture(tr);
 }
 
-/* Renders the target at full size, then for blur halves it (each step a 2x2 average) until the
- * remaining radius fits the kernel, and blurs horizontally and vertically. */
-static gs_texture_t *render_target_texture(struct blur_region *br, obs_source_t *target, uint32_t cx, uint32_t cy)
+/* Halvings before the blur so the remaining radius fits the kernel. */
+static int downsample_levels(float radius)
 {
-	if (!begin_pass(br->base, cx, cy))
+	int levels = 0;
+	while (radius > MAX_KERNEL_RADIUS && levels < MAX_DOWNSAMPLE) {
+		radius *= 0.5f;
+		levels++;
+	}
+	return levels;
+}
+
+/* The region's bounding box in target pixels, grown by how far the blur or mosaic reaches and
+ * clipped to the target. False when the region misses the target. */
+static bool needed_rect(const struct blur_region *br, const float map_x[3], const float map_y[3], uint32_t cx,
+			uint32_t cy, int levels, struct pixel_rect *r)
+{
+	const double xs[4] = {0.0, br->width, 0.0, br->width};
+	const double ys[4] = {0.0, 0.0, br->height, br->height};
+	double min_x = DBL_MAX, min_y = DBL_MAX, max_x = -DBL_MAX, max_y = -DBL_MAX;
+	for (int i = 0; i < 4; i++) {
+		const double x = map_x[0] * xs[i] + map_x[1] * ys[i] + map_x[2];
+		const double y = map_y[0] * xs[i] + map_y[1] * ys[i] + map_y[2];
+		min_x = fmin(min_x, x);
+		max_x = fmax(max_x, x);
+		min_y = fmin(min_y, y);
+		max_y = fmax(max_y, y);
+	}
+
+	const double margin = br->mode == MODE_MOSAIC ? br->mosaic + 1.0 : ceil(br->blur) + (1 << levels) + 1.0;
+	/* Sized from the span alone, so moving the region does not reallocate the textures each frame. */
+	const double x0 = floor(min_x - margin), y0 = floor(min_y - margin);
+	const double x1 = x0 + ceil(max_x - min_x + 2.0 * margin) + 1.0;
+	const double y1 = y0 + ceil(max_y - min_y + 2.0 * margin) + 1.0;
+
+	const double lx = fmax(x0, 0.0), ly = fmax(y0, 0.0);
+	const double hx = fmin(x1, (double)cx), hy = fmin(y1, (double)cy);
+	if (!(hx > lx && hy > ly))
+		return false;
+
+	r->x = (int)lx;
+	r->y = (int)ly;
+	r->cx = (uint32_t)(hx - lx);
+	r->cy = (uint32_t)(hy - ly);
+	return true;
+}
+
+/* Renders the needed part of the target, then for blur halves it (each step a 2x2 average)
+ * `levels` times and blurs horizontally and vertically. */
+static gs_texture_t *render_target_texture(struct blur_region *br, obs_source_t *target, const struct pixel_rect *r,
+					   int levels)
+{
+	if (!begin_pass(br->base, r->cx, r->cy))
 		return NULL;
+	gs_ortho((float)r->x, (float)r->x + (float)r->cx, (float)r->y, (float)r->y + (float)r->cy, -100.0f, 100.0f);
 	obs_source_video_render(target);
 	gs_texrender_end(br->base);
 
@@ -310,18 +422,17 @@ static gs_texture_t *render_target_texture(struct blur_region *br, obs_source_t 
 	if (br->mode != MODE_BLUR)
 		return tex;
 
-	float radius = br->blur;
-	for (int level = 0; tex && radius > MAX_KERNEL_RADIUS && level < MAX_DOWNSAMPLE; level++) {
+	uint32_t cx = r->cx, cy = r->cy;
+	for (int level = 0; tex && level < levels; level++) {
 		cx = (cx + 1) / 2;
 		cy = (cy + 1) / 2;
 		tex = effect_pass(br, br->down[level], "Copy", tex, cx, cy, 0.0f, 0.0f);
-		radius *= 0.5f;
 	}
 	if (!tex)
 		return NULL;
 
-	/* The kernel spans 12 taps each side; spread them over the radius. */
-	const float spacing = radius / 12.0f;
+	/* The kernel spans 12 taps each side; spread them over the radius left after halving. */
+	const float spacing = br->blur / (float)(1 << levels) / 12.0f;
 	tex = effect_pass(br, br->blur_h, "Blur", tex, cx, cy, spacing / (float)cx, 0.0f);
 	if (!tex)
 		return NULL;
@@ -350,8 +461,8 @@ static void render_solid(struct blur_region *br)
 
 static void render_from_target(struct blur_region *br, obs_scene_t *scene)
 {
-	obs_sceneitem_t *self_item = obs_scene_find_source(scene, obs_source_get_name(br->source));
-	obs_sceneitem_t *target_item = obs_scene_find_source(scene, br->located_target.array);
+	obs_sceneitem_t *self_item = obs_scene_find_sceneitem_by_id(scene, br->self_id);
+	obs_sceneitem_t *target_item = obs_scene_find_sceneitem_by_id(scene, br->target_id);
 	if (!self_item || !target_item || !obs_sceneitem_visible(target_item))
 		return;
 
@@ -368,28 +479,32 @@ static void render_from_target(struct blur_region *br, obs_scene_t *scene)
 	if (!region_map_compute(&self_place, &target_place, map_x, map_y))
 		return;
 
+	const int levels = br->mode == MODE_BLUR ? downsample_levels(br->blur) : 0;
+	struct pixel_rect rect;
+	if (!needed_rect(br, map_x, map_y, cx, cy, levels, &rect))
+		return;
+
 	/* The scene has pushed the region's own transform; the offscreen passes need none. */
 	gs_matrix_push();
 	gs_matrix_identity();
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-	gs_texture_t *tex = render_target_texture(br, target, cx, cy);
+	gs_texture_t *tex = render_target_texture(br, target, &rect, levels);
 	gs_blend_state_pop();
 	gs_matrix_pop();
 	if (!tex)
 		return;
 
-	struct vec4 mx, my, tint;
-	struct vec2 tex_size;
+	struct vec4 mx, my, tint, tex_rect;
 	vec4_set(&mx, map_x[0], map_x[1], map_x[2], 0.0f);
 	vec4_set(&my, map_y[0], map_y[1], map_y[2], 0.0f);
 	vec4_set(&tint, br->color.x, br->color.y, br->color.z, br->tint);
-	vec2_set(&tex_size, (float)cx, (float)cy);
+	vec4_set(&tex_rect, (float)rect.x, (float)rect.y, (float)rect.cx, (float)rect.cy);
 
 	set_shape_params(br);
 	gs_effect_set_vec4(br->p_map_x, &mx);
 	gs_effect_set_vec4(br->p_map_y, &my);
-	gs_effect_set_vec2(br->p_tex_size, &tex_size);
+	gs_effect_set_vec4(br->p_tex_rect, &tex_rect);
 	gs_effect_set_float(br->p_mosaic, br->mode == MODE_MOSAIC ? br->mosaic : 0.0f);
 	gs_effect_set_vec4(br->p_tint, &tint);
 	gs_effect_set_texture(br->p_image, tex);
@@ -408,7 +523,7 @@ static void blur_region_render(void *data, gs_effect_t *unused)
 		render_solid(br);
 		return;
 	}
-	if (!br->container || !br->located_target.len)
+	if (!br->container || !br->target_id)
 		return;
 
 	obs_source_t *container = obs_weak_source_get_source(br->container);
@@ -474,11 +589,34 @@ static void blur_region_update(void *data, obs_data_t *settings)
 	br->refresh_t = REFRESH_INTERVAL;
 }
 
+/* Keeps a manually chosen target when that source is renamed. */
+static void source_renamed(void *data, calldata_t *cd)
+{
+	struct blur_region *br = data;
+	const char *prev_name = calldata_string(cd, "prev_name");
+	const char *new_name = calldata_string(cd, "new_name");
+	if (!new_name)
+		return;
+
+	pthread_mutex_lock(&br->target_mutex);
+	const bool matches = br->target_name.len && name_equals(br->target_name.array, prev_name);
+	if (matches)
+		dstr_copy(&br->target_name, new_name);
+	pthread_mutex_unlock(&br->target_mutex);
+	if (!matches)
+		return;
+
+	obs_data_t *settings = obs_source_get_settings(br->source);
+	obs_data_set_string(settings, "target", new_name);
+	obs_data_release(settings);
+}
+
 static void *blur_region_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct blur_region *br = bzalloc(sizeof(*br));
 	br->source = source;
 	pthread_mutex_init(&br->target_mutex, NULL);
+	signal_handler_connect(obs_get_signal_handler(), "source_rename", source_renamed, br);
 
 	char *path = obs_module_file("effects/blur-region.effect");
 	obs_enter_graphics();
@@ -496,7 +634,7 @@ static void *blur_region_create(obs_data_t *settings, obs_source_t *source)
 		br->p_local_size = gs_effect_get_param_by_name(br->effect, "local_size");
 		br->p_map_x = gs_effect_get_param_by_name(br->effect, "map_x");
 		br->p_map_y = gs_effect_get_param_by_name(br->effect, "map_y");
-		br->p_tex_size = gs_effect_get_param_by_name(br->effect, "tex_size");
+		br->p_tex_rect = gs_effect_get_param_by_name(br->effect, "tex_rect");
 		br->p_mosaic = gs_effect_get_param_by_name(br->effect, "mosaic");
 		br->p_tint = gs_effect_get_param_by_name(br->effect, "tint");
 		br->p_radius = gs_effect_get_param_by_name(br->effect, "radius");
@@ -514,6 +652,7 @@ static void *blur_region_create(obs_data_t *settings, obs_source_t *source)
 static void blur_region_destroy(void *data)
 {
 	struct blur_region *br = data;
+	signal_handler_disconnect(obs_get_signal_handler(), "source_rename", source_renamed, br);
 
 	obs_enter_graphics();
 	gs_effect_destroy(br->effect);

@@ -7,7 +7,9 @@ on:
     branches:
       - main
     tags:
-      - '*'
+      # Only version tags build; create-release publishes 1.2.3 and 1.2.3-beta1 / -rc1.
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
     paths-ignore:
       - '**.md'
 permissions:
@@ -64,6 +66,13 @@ jobs:
             *) echo 'validTag=false' >> $GITHUB_OUTPUT ;;
           esac
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: fromJSON(steps.check.outputs.validTag)
+        with:
+          path: repo
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
       - name: Download Build Artifacts 📥
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: fromJSON(steps.check.outputs.validTag)
@@ -97,16 +106,26 @@ jobs:
             done
           done
 
-      - name: Generate Checksums 🪪
+      - name: Write Release Notes 📝
         if: fromJSON(steps.check.outputs.validTag)
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
         run: |
-          : Generate Checksums 🪪
+          : Write Release Notes 📝
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
           shopt -s extglob
 
-          echo "### Checksums" > ${{ github.workspace }}/CHECKSUMS.txt
+          notes="${{ github.workspace }}/RELEASE_NOTES.md"
+          # The CHANGELOG section of this version (1.2.3-beta1 reads the 1.2.3 section), then the checksums.
+          awk -v v="${VERSION%%-*}" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && (/^## / || /^\[/) { exit }
+            found { print }
+          ' repo/CHANGELOG.md > "${notes}"
+
+          echo "### Checksums" >> "${notes}"
           for file in ${{ github.workspace }}/@(*.exe|*.deb|*.ddeb|*.pkg|*.tar.xz|*.zip); do
-            echo "    ${file##*/}: $(sha256sum "${file}" | cut -d " " -f 1)" >> ${{ github.workspace }}/CHECKSUMS.txt
+            echo "    ${file##*/}: $(sha256sum "${file}" | cut -d " " -f 1)" >> "${notes}"
           done
 
       - name: Create Release 🛫
@@ -118,7 +137,7 @@ jobs:
           prerelease: ${{ fromJSON(steps.check.outputs.prerelease) }}
           tag_name: ${{ steps.check.outputs.version }}
           name: ${{ needs.build-project.outputs.pluginName }} ${{ steps.check.outputs.version }}
-          body_path: ${{ github.workspace }}/CHECKSUMS.txt
+          body_path: ${{ github.workspace }}/RELEASE_NOTES.md
           files: |
             ${{ github.workspace }}/*.exe
             ${{ github.workspace }}/*.zip

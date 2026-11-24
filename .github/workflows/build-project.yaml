@@ -21,8 +21,6 @@ jobs:
       pluginName: ${{ steps.setup.outputs.pluginName }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
       - name: Check Event Data ☑️
         id: setup
         env:
@@ -81,7 +79,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Set Up Environment 🔧
@@ -106,8 +103,10 @@ jobs:
         id: ccache-cache
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-ccache-${{ needs.check-event.outputs.config }}
+          # The commit in the key makes every run save its cache; a fixed key would be saved once and never refreshed.
+          key: ${{ runner.os }}-ccache-${{ needs.check-event.outputs.config }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-ccache-${{ needs.check-event.outputs.config }}-
             ${{ runner.os }}-ccache-
 
       - name: Set Up Codesigning 🔑
@@ -163,7 +162,7 @@ jobs:
         if: github.event_name != 'pull_request' && steps.ccache-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-ccache-${{ needs.check-event.outputs.config }}
+          key: ${{ runner.os }}-ccache-${{ needs.check-event.outputs.config }}-${{ github.sha }}
 
   ubuntu-build:
     name: Build for Ubuntu 🐧
@@ -178,7 +177,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Set Up Environment 🔧
@@ -197,8 +195,9 @@ jobs:
         id: ccache-cache
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}
+          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}-
             ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-
 
       - name: Build Plugin 🧱
@@ -237,7 +236,7 @@ jobs:
         if: github.event_name != 'pull_request' && steps.ccache-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}
+          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}-${{ github.sha }}
 
   windows-build:
     name: Build for Windows 🪟
@@ -249,7 +248,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Set Up Environment 🔧

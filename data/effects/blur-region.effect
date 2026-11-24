@@ -12,7 +12,7 @@ uniform float2 texel_step;
 uniform float2 local_size; // region size in its own pixels
 uniform float4 map_x;      // target.x = dot(float3(x, y, 1), map_x.xyz), in target pixels
 uniform float4 map_y;
-uniform float2 tex_size;   // target size in pixels
+uniform float4 tex_rect;   // xy = target pixel at the texture's corner, zw = texture size in target pixels
 uniform float mosaic;      // block size in target pixels, 0 = off
 uniform float4 tint;       // rgb = color, a = amount
 uniform float radius;      // corner radius in region pixels
@@ -74,7 +74,7 @@ float4 PSFinal(VertData v_in) : TARGET
 	if (mosaic > 0.0)
 		tp = (floor(tp / mosaic) + 0.5) * mosaic;
 
-	float4 c = image.Sample(linearClamp, tp / tex_size);
+	float4 c = image.Sample(linearClamp, (tp - tex_rect.xy) / tex_rect.zw);
 	c.rgb = lerp(c.rgb, tint.rgb, tint.a);
 	return float4(c.rgb, c.a * region_mask(lp) * opacity);
 }
