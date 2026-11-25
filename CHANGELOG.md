@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.1]
+
 ### 修复
 
 - 自动模式会选中区域下方最近的任意来源。游戏上面叠着透明的直播边框图片时，区域模糊的是那张图片，聊天框照样露出来。现在优先选覆盖到区域的游戏、窗口或显示器采集。
@@ -24,5 +26,6 @@
 - 游戏采集被移动、缩放、旋转或裁剪后，区域依然对准正确的画面。
 - 中文和英文界面。
 
-[Unreleased]: https://github.com/VOfficial404/obs-blur-region/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/VOfficial404/obs-blur-region/compare/0.1.1...HEAD
+[0.1.1]: https://github.com/VOfficial404/obs-blur-region/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/VOfficial404/obs-blur-region/releases/tag/0.1.0
