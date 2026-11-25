@@ -1,34 +1,17 @@
-name: Push
-run-name: ${{ github.ref_name }} push run 🚀
+name: Release
+run-name: 发布 ${{ github.ref_name }}
 on:
-  # Pushes to main only check formatting (docs-only pushes skip it); release tags build and publish.
-  # Pull requests and manual dispatch cover the rest.
+  # Only version tags: 1.2.3 drafts a release, 1.2.3-beta1 / -rc1 a prerelease.
+  # Formatting on main is checked by check-format.yaml; test builds go through dispatch.yaml.
   push:
-    branches:
-      - main
     tags:
-      # Only version tags build; create-release publishes 1.2.3 and 1.2.3-beta1 / -rc1.
       - '[0-9]+.[0-9]+.[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+-*'
-    paths-ignore:
-      - '**.md'
 permissions:
   contents: read
-concurrency:
-  # A newer push to main supersedes the running check; a release tag always runs to the end.
-  group: '${{ github.workflow }} @ ${{ github.ref }}'
-  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 jobs:
-  check-format:
-    name: Check Formatting 🔍
-    if: github.ref_type == 'branch'
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
-
   build-project:
     name: Build Project 🧱
-    if: github.ref_type == 'tag'
     uses: ./.github/workflows/build-project.yaml
     secrets: inherit
     permissions:
@@ -36,7 +19,6 @@ jobs:
 
   create-release:
     name: Create Release 🛫
-    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     needs: build-project
     permissions:

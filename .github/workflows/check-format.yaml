@@ -1,6 +1,24 @@
-name: Check Code Formatting 🛠️
+name: Check Format
 on:
+  # Pull requests call this through pr-pull.yaml; pushes to main run it only when code or CMake files change,
+  # so docs, version bumps and release tags no longer start a run. Runs are titled with the commit message.
   workflow_call:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.clang-format'
+      - '.gersemirc'
+permissions:
+  contents: read
+concurrency:
+  # Own prefix: inside a pull request run, github.workflow is the caller's name and would share its group.
+  group: 'check-format @ ${{ github.ref }}'
+  cancel-in-progress: true
 jobs:
   clang-format:
     runs-on: ubuntu-24.04

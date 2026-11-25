@@ -8,7 +8,7 @@
 用来盖住聊天框、玩家 ID、坐标、好友列表这些不想让观众看到的东西。
 
 [![版本](https://img.shields.io/github/v/release/VOfficial404/obs-blur-region?color=5b8def&label=版本)](https://github.com/VOfficial404/obs-blur-region/releases/latest)
-[![构建](https://img.shields.io/github/actions/workflow/status/VOfficial404/obs-blur-region/push.yaml?label=构建)](https://github.com/VOfficial404/obs-blur-region/actions)
+[![构建](https://img.shields.io/github/actions/workflow/status/VOfficial404/obs-blur-region/release.yaml?label=构建)](https://github.com/VOfficial404/obs-blur-region/actions)
 [![许可](https://img.shields.io/github/license/VOfficial404/obs-blur-region?label=许可)](LICENSE)
 
 [下载](https://github.com/VOfficial404/obs-blur-region/releases/latest) · [安装](#安装) · [使用](#使用) · [常见问题](#常见问题) · [English](#english)
