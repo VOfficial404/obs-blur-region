@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.2]
+
 ### 新增
 
 - 快捷键「模糊区域：显示 / 隐藏所有区域」：一键开关所有区域，在「设置 → 快捷键」里设置。每次启动 OBS 时区域都是显示状态。
@@ -30,6 +32,7 @@
 - 游戏采集被移动、缩放、旋转或裁剪后，区域依然对准正确的画面。
 - 中文和英文界面。
 
-[Unreleased]: https://github.com/VOfficial404/obs-blur-region/compare/0.1.1...HEAD
+[Unreleased]: https://github.com/VOfficial404/obs-blur-region/compare/0.1.2...HEAD
+[0.1.2]: https://github.com/VOfficial404/obs-blur-region/compare/0.1.1...0.1.2
 [0.1.1]: https://github.com/VOfficial404/obs-blur-region/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/VOfficial404/obs-blur-region/releases/tag/0.1.0
