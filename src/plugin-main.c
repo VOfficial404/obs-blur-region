@@ -23,6 +23,8 @@ OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 extern struct obs_source_info blur_region_source;
+void blur_region_hotkey_register(void);
+void blur_region_hotkey_unregister(void);
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
@@ -32,6 +34,12 @@ MODULE_EXPORT const char *obs_module_description(void)
 bool obs_module_load(void)
 {
 	obs_register_source(&blur_region_source);
+	blur_region_hotkey_register();
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;
+}
+
+void obs_module_unload(void)
+{
+	blur_region_hotkey_unregister();
 }

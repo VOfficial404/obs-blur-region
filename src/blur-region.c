@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <graphics/vec4.h>
 #include <util/darray.h>
 #include <util/dstr.h>
+#include <util/platform.h>
 #include <util/threading.h>
 
 #include <float.h>
@@ -44,6 +45,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 /* Blur radius (in texels) above which the image is halved before blurring; keeps the 25-tap kernel dense. */
 #define MAX_KERNEL_RADIUS 16.0f
 #define MAX_DOWNSAMPLE 6
+
+#define HOTKEY_NAME "obs_blur_region.toggle_all"
+#define HOTKEY_FILE "hotkeys.json"
+
+/* Set from the hotkey thread, read by every region on the graphics thread. Starts shown on each launch,
+ * so a region hidden at the end of one stream does not stay off for the next. */
+static volatile bool regions_hidden = false;
+static obs_hotkey_id toggle_hotkey = OBS_INVALID_HOTKEY_ID;
 
 enum blur_mode {
 	MODE_BLUR = 0,
@@ -516,7 +525,7 @@ static void blur_region_render(void *data, gs_effect_t *unused)
 {
 	UNUSED_PARAMETER(unused);
 	struct blur_region *br = data;
-	if (!br->effect)
+	if (!br->effect || os_atomic_load_bool(&regions_hidden))
 		return;
 
 	if (br->mode == MODE_SOLID) {
@@ -547,6 +556,62 @@ static void blur_region_tick(void *data, float seconds)
 		clear_location(br);
 	else
 		locate(br);
+}
+
+/* ---- Hotkey: show or hide every region at once ------------------------------------------------ */
+
+static void toggle_all(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+
+	const bool hidden = !os_atomic_load_bool(&regions_hidden);
+	os_atomic_set_bool(&regions_hidden, hidden);
+	obs_log(LOG_INFO, "all regions %s", hidden ? "hidden" : "shown");
+}
+
+/* OBS keeps bindings only for hotkeys of sources and of its own UI; a plugin's frontend hotkey is stored
+ * by the plugin, here in plugin_config/obs-blur-region/hotkeys.json. */
+void blur_region_hotkey_register(void)
+{
+	toggle_hotkey = obs_hotkey_register_frontend(HOTKEY_NAME, T("Hotkey.ToggleAll"), toggle_all, NULL);
+
+	char *path = obs_module_config_path(HOTKEY_FILE);
+	obs_data_t *data = path ? obs_data_create_from_json_file_safe(path, "bak") : NULL;
+	if (data) {
+		obs_data_array_t *keys = obs_data_get_array(data, HOTKEY_NAME);
+		if (keys) {
+			obs_hotkey_load(toggle_hotkey, keys);
+			obs_data_array_release(keys);
+		}
+		obs_data_release(data);
+	}
+	bfree(path);
+}
+
+/* Called from obs_module_unload: OBS frees modules before hotkeys, so the binding is still readable. */
+void blur_region_hotkey_unregister(void)
+{
+	if (toggle_hotkey == OBS_INVALID_HOTKEY_ID)
+		return;
+
+	char *dir = obs_module_config_path("");
+	char *path = obs_module_config_path(HOTKEY_FILE);
+	obs_data_array_t *keys = obs_hotkey_save(toggle_hotkey);
+	obs_data_t *data = obs_data_create();
+	obs_data_set_array(data, HOTKEY_NAME, keys);
+	if (!dir || !path || os_mkdirs(dir) == MKDIR_ERROR || !obs_data_save_json_safe(data, path, "tmp", "bak"))
+		obs_log(LOG_WARNING, "failed to save the hotkey to %s", path ? path : HOTKEY_FILE);
+	obs_data_release(data);
+	obs_data_array_release(keys);
+	bfree(path);
+	bfree(dir);
+
+	obs_hotkey_unregister(toggle_hotkey);
+	toggle_hotkey = OBS_INVALID_HOTKEY_ID;
 }
 
 /* ---- Source definition -------------------------------------------------------------------- */
